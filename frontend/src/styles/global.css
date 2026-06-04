@@ -1,0 +1,30 @@
+.dashboard {
+  background:  #034a91;
+  color: white;
+  min-height: 100vh;
+  text-align: center;
+  padding: 40px;
+}
+
+.drop-zones {
+  margin: 30px;
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+
+input {
+  padding: 20px;
+  border: 2px dashed white;
+  background: transparent;
+  color: white;
+}
+
+button {
+  padding: 15px 30px;
+  background: #1eb3f8;
+  border: none;
+  color: white;
+  cursor: pointer;
+  margin-top: 20px;
+}
