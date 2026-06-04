@@ -31,6 +31,6 @@ npm run dev
 - View issue report
 
 ## Output Colors
-- Red: Changes
-- Blue: Annotation
+- Yellow: Changes
+- Red: Annotation
 - Orange: Clashes
