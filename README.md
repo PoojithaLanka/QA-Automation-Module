@@ -1,4 +1,4 @@
-# PRAXSOL QA DRAWING INSPECTOR
+# QA DRAWING INSPECTOR
 
 ## Overview
 AI-powered QA system for engineering drawings that detects:
