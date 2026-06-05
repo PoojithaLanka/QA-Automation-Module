@@ -5,6 +5,10 @@ export default function UploadPage() {
 
   const [file1, setFile1] = useState(null);
   const [file2, setFile2] = useState(null);
+
+  const [preview1, setPreview1] = useState(null);
+  const [preview2, setPreview2] = useState(null);
+
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -25,58 +29,215 @@ export default function UploadPage() {
     setResult(null);
 
     const formData = new FormData();
+
     formData.append("file1", file1);
     formData.append("file2", file2);
     formData.append("options", JSON.stringify(options));
 
     try {
-      const res = await axios.post("http://127.0.0.1:8000/analyze", formData);
-      setResult(res.data.image);
-    } catch (err) {
-      console.log(err);
-      alert("Error running QA");
-    }
 
-    setLoading(false);
+      const res = await axios.post(
+        "http://127.0.0.1:8000/analyze",
+        formData
+      );
+
+      setResult(res.data.image);
+
+    } catch (err) {
+
+      console.error(err);
+      alert("Error running QA");
+
+    } finally {
+
+      setLoading(false);
+
+    }
   };
 
   return (
-    <div className="dashboard">
+    <div
+      className="dashboard"
+      style={{
+        padding: "20px",
+        width: "100%"
+      }}
+    >
 
       <h2>QA Automation Module</h2>
 
-      <input type="file" onChange={(e) => setFile1(e.target.files[0])} />
-      <input type="file" onChange={(e) => setFile2(e.target.files[0])} />
+      {/* FILE UPLOADS */}
 
-      <div>
-        <label>
-          <input type="checkbox"
+      <div style={{ marginBottom: "10px" }}>
+        <input
+          type="file"
+          accept=".png,.jpg,.jpeg,.pdf"
+          onChange={(e) => {
+
+            const file = e.target.files[0];
+
+            setFile1(file);
+
+            if (file) {
+              setPreview1(URL.createObjectURL(file));
+            }
+          }}
+        />
+      </div>
+
+      <div style={{ marginBottom: "20px" }}>
+        <input
+          type="file"
+          accept=".png,.jpg,.jpeg,.pdf"
+          onChange={(e) => {
+
+            const file = e.target.files[0];
+
+            setFile2(file);
+
+            if (file) {
+              setPreview2(URL.createObjectURL(file));
+            }
+          }}
+        />
+      </div>
+
+      {/* PREVIEW SECTION */}
+
+      {(preview1 || preview2) && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "20px",
+            marginBottom: "30px",
+            width: "100%"
+          }}
+        >
+
+          {/* INPUT PREVIEW */}
+
+          <div>
+            <h3>Input Drawing</h3>
+
+            {preview1 && (
+              file1?.type === "application/pdf" ? (
+                <iframe
+                  src={preview1}
+                  title="Input PDF"
+                  style={{
+                    width: "100%",
+                    height: "500px",
+                    border: "1px solid #ccc"
+                  }}
+                />
+              ) : (
+                <img
+                  src={preview1}
+                  alt="Input Drawing"
+                  style={{
+                    width: "100%",
+                    maxHeight: "500px",
+                    objectFit: "contain",
+                    border: "1px solid #ccc"
+                  }}
+                />
+              )
+            )}
+          </div>
+
+          {/* OUTPUT PREVIEW */}
+
+          <div>
+            <h3>Output Drawing</h3>
+
+            {preview2 && (
+              file2?.type === "application/pdf" ? (
+                <iframe
+                  src={preview2}
+                  title="Output PDF"
+                  style={{
+                    width: "100%",
+                    height: "500px",
+                    border: "1px solid #ccc"
+                  }}
+                />
+              ) : (
+                <img
+                  src={preview2}
+                  alt="Output Drawing"
+                  style={{
+                    width: "100%",
+                    maxHeight: "500px",
+                    objectFit: "contain",
+                    border: "1px solid #ccc"
+                  }}
+                />
+              )
+            )}
+          </div>
+
+        </div>
+      )}
+
+      {/* OPTIONS */}
+
+      <div style={{ marginBottom: "20px" }}>
+
+        <label style={{ marginRight: "20px" }}>
+          <input
+            type="checkbox"
             checked={options.annotation}
-            onChange={() => setOptions({ ...options, annotation: !options.annotation })}
+            onChange={() =>
+              setOptions({
+                ...options,
+                annotation: !options.annotation
+              })
+            }
           />
           Annotation
         </label>
 
-        <label>
-          <input type="checkbox"
+        <label style={{ marginRight: "20px" }}>
+          <input
+            type="checkbox"
             checked={options.changes}
-            onChange={() => setOptions({ ...options, changes: !options.changes })}
+            onChange={() =>
+              setOptions({
+                ...options,
+                changes: !options.changes
+              })
+            }
           />
           Changes
         </label>
 
         <label>
-          <input type="checkbox"
+          <input
+            type="checkbox"
             checked={options.clash}
-            onChange={() => setOptions({ ...options, clash: !options.clash })}
+            onChange={() =>
+              setOptions({
+                ...options,
+                clash: !options.clash
+              })
+            }
           />
           Clash
         </label>
+
       </div>
 
-      <button onClick={runQA} disabled={loading}>
+      {/* BUTTON */}
+
+      <button
+        onClick={runQA}
+        disabled={loading}
+      >
         {loading ? "Processing..." : "Run QA"}
       </button>
+
+      {/* LOADING */}
 
       {loading && (
         <p style={{ color: "orange" }}>
@@ -84,10 +245,22 @@ export default function UploadPage() {
         </p>
       )}
 
+      {/* RESULT */}
+
       {result && (
-        <div>
-          <h3>Output</h3>
-          <img src={result} width="90%" />
+        <div style={{ marginTop: "40px" }}>
+
+          <h2>QA Result</h2>
+
+          <img
+            src={result}
+            alt="QA Result"
+            style={{
+              width: "100%",
+              border: "2px solid #444"
+            }}
+          />
+
         </div>
       )}
 
