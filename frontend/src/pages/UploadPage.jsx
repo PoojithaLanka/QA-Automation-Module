@@ -10,10 +10,14 @@ export default function UploadPage() {
   const [file2, setFile2] = useState(null);
   const [preview1, setPreview1] = useState(null);
   const [preview2, setPreview2] = useState(null);
+  const [dxfPreview1, setDxfPreview1] = useState(null);
+  const [dxfPreview2, setDxfPreview2] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [report, setReport] = useState(null);
+  const [previewLoading1, setPreviewLoading1] = useState(false);
+  const [previewLoading2, setPreviewLoading2] = useState(false);
 
   const [imageOptions, setImageOptions] = useState({
     annotation: true,
@@ -44,6 +48,37 @@ export default function UploadPage() {
       setIsCadMode(false);
     }
   }, [file1, file2]);
+
+  // Fetch DXF preview from backend - FIXED VERSION
+  const fetchDxfPreview = async (file, setPreview, setLoading) => {
+    if (!file || !file.name.toLowerCase().endsWith(".dxf")) return;
+    
+    setLoading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    try {
+      const res = await axios.post("http://127.0.0.1:8000/preview", formData, {
+        responseType: "blob"
+      });
+      
+      // Check if response is valid blob
+      if (res.data && res.data.size > 0) {
+        const url = URL.createObjectURL(res.data);
+        setPreview(url);
+        console.log("✓ DXF preview loaded successfully", file.name);
+      } else {
+        console.error("Empty response from preview endpoint");
+        setPreview(null);
+      }
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || err.message || "Unknown error";
+      console.error("✗ DXF preview failed:", errorMsg);
+      setPreview(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const runQA = async () => {
     if (!file1 || !file2) {
@@ -77,44 +112,85 @@ export default function UploadPage() {
   const handleFileDrop = (index, e) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
+    if (!file) return;
+    
     if (index === 1) {
       setFile1(file);
       setPreview1(URL.createObjectURL(file));
+      setDxfPreview1(null); // Clear old preview
+      
+      if (file.name.toLowerCase().endsWith(".dxf")) {
+        fetchDxfPreview(file, setDxfPreview1, setPreviewLoading1);
+      }
+      setDragging1(false);
     } else {
       setFile2(file);
       setPreview2(URL.createObjectURL(file));
+      setDxfPreview2(null); // Clear old preview
+      
+      if (file.name.toLowerCase().endsWith(".dxf")) {
+        fetchDxfPreview(file, setDxfPreview2, setPreviewLoading2);
+      }
+      setDragging2(false);
     }
-    if (index === 1) setDragging1(false);
-    else setDragging2(false);
   };
 
   const handleFileSelect = (index, e) => {
     const file = e.target.files[0];
+    if (!file) return;
+    
     if (index === 1) {
       setFile1(file);
-      if (file) setPreview1(URL.createObjectURL(file));
+      setPreview1(URL.createObjectURL(file));
+      setDxfPreview1(null); // Clear old preview
+      
+      if (file.name.toLowerCase().endsWith(".dxf")) {
+        fetchDxfPreview(file, setDxfPreview1, setPreviewLoading1);
+      }
     } else {
       setFile2(file);
-      if (file) setPreview2(URL.createObjectURL(file));
+      setPreview2(URL.createObjectURL(file));
+      setDxfPreview2(null); // Clear old preview
+      
+      if (file.name.toLowerCase().endsWith(".dxf")) {
+        fetchDxfPreview(file, setDxfPreview2, setPreviewLoading2);
+      }
     }
   };
 
   const isDxf = (file) => file && file.name.toLowerCase().endsWith(".dxf");
 
-  const renderPreview = (file, previewUrl) => {
+  const renderPreview = (file, previewUrl, dxfPreviewUrl, isLoading) => {
     if (!file) return <p className="preview-placeholder">No file selected</p>;
+    
     if (file.type === "application/pdf") {
       return <iframe src={previewUrl} title="PDF Preview" className="preview-iframe" />;
     }
+    
     if (isDxf(file)) {
+      if (isLoading) {
+        return (
+          <div className="dxf-preview">
+            <div className="dxf-icon">📐</div>
+            <div className="dxf-name">{file.name}</div>
+            <div className="dxf-badge">⏳ Rendering preview...</div>
+          </div>
+        );
+      }
+      
+      if (dxfPreviewUrl) {
+        return <img src={dxfPreviewUrl} alt="DXF Preview" className="preview-image" />;
+      }
+      
       return (
         <div className="dxf-preview">
-          <div className="dxf-icon">📐</div>
+          <div className="dxf-icon">⚠️</div>
           <div className="dxf-name">{file.name}</div>
-          <div className="dxf-badge">DXF file – CAD engine</div>
+          <div className="dxf-badge">Preview unavailable</div>
         </div>
       );
     }
+    
     return <img src={previewUrl} alt="Preview" className="preview-image" />;
   };
 
@@ -143,7 +219,6 @@ export default function UploadPage() {
     }
   };
 
-  // Helper to render table for a category
   const renderTable = (title, items, columns) => {
     if (!items || items.length === 0) return null;
     return (
@@ -168,6 +243,16 @@ export default function UploadPage() {
       </div>
     );
   };
+
+  // Cleanup object URLs
+  useEffect(() => {
+    return () => {
+      if (preview1) URL.revokeObjectURL(preview1);
+      if (preview2) URL.revokeObjectURL(preview2);
+      if (dxfPreview1) URL.revokeObjectURL(dxfPreview1);
+      if (dxfPreview2) URL.revokeObjectURL(dxfPreview2);
+    };
+  }, []);
 
   return (
     <div className="dashboard">
@@ -211,11 +296,11 @@ export default function UploadPage() {
         <div className="preview-grid">
           <div className="preview-card">
             <h3>Input Preview</h3>
-            {renderPreview(file1, preview1)}
+            {renderPreview(file1, preview1, dxfPreview1, previewLoading1)}
           </div>
           <div className="preview-card">
             <h3>Output Preview</h3>
-            {renderPreview(file2, preview2)}
+            {renderPreview(file2, preview2, dxfPreview2, previewLoading2)}
           </div>
         </div>
       )}
@@ -267,7 +352,6 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* Report Section */}
       {report && (
         <div className="report-section">
           <h3>QA Report</h3>
@@ -298,7 +382,6 @@ export default function UploadPage() {
                 </div>
               )}
 
-              {/* Professional Tables for CAD Reports */}
               {report.moved !== undefined && report.details ? (
                 <div className="report-tables">
                   {renderTable("📌 Moved Entities", report.details.moved, [
@@ -335,7 +418,6 @@ export default function UploadPage() {
                   ])}
                 </div>
               ) : (
-                // Simple list for image reports (no detailed tables)
                 report.details && (
                   <details className="report-details">
                     <summary>View detailed list</summary>

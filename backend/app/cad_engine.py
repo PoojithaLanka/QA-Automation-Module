@@ -10,6 +10,9 @@ import io
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from collections import defaultdict
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Force matplotlib to use 'Agg' backend (no GUI)
 import matplotlib
@@ -368,7 +371,6 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
     return buf.getvalue()
 
 def process_cad_files(file1_bytes, file2_bytes, opts):
-    import io
     try:
         stream1 = io.BytesIO(file1_bytes)
         stream2 = io.BytesIO(file2_bytes)
@@ -387,7 +389,11 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
             ctx = RenderContext(doc_b)
             backend = MatplotlibBackend(ax)
             Frontend(ctx, backend).draw_layout(doc_b.modelspace(), finalize=True)
-            ax.set_title("NO DIFFERENCE DETECTED", fontsize=20, fontweight='bold',
+            
+            # Auto-scale to show content
+            ax.autoscale_view()
+            
+            ax.set_title("✓", fontsize=40, fontweight='bold',
                          color='green', pad=20, loc='center')
             ax.set_axis_off()
             buf = io.BytesIO()
@@ -400,6 +406,7 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
                     "moved": [], "modified": [], "missing": [], "added": [], "clashes": []
                 }
             }
+            buf.seek(0)
             return buf.getvalue(), report
 
         diff = compare_dxf(ea, eb)
@@ -479,10 +486,79 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
         }
         return img_bytes, report
     except Exception as e:
+        logger.error(f"CAD processing error: {str(e)}", exc_info=True)
         fig, ax = plt.subplots(figsize=(8,6))
         ax.text(0.5, 0.5, f"CAD Error: {str(e)}", ha='center', va='center', transform=ax.transAxes, color='red')
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         plt.close(fig)
+        buf.seek(0)
         report = {"error": str(e)}
         return buf.getvalue(), report
+
+
+def get_dxf_bounds(doc):
+    """Calculate bounding box of all entities in the DXF document."""
+    try:
+        xs = []
+        ys = []
+        
+        for entity in doc.modelspace():
+            try:
+                # Get bounding box for different entity types
+                if hasattr(entity, 'bbox'):
+                    bbox_data = entity.bbox()
+                    if bbox_data and len(bbox_data) >= 2:
+                        p1, p2 = bbox_data[0], bbox_data[1]
+                        xs.extend([p1[0], p2[0]])
+                        ys.extend([p1[1], p2[1]])
+            except:
+                pass
+        
+        if xs and ys:
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            
+            # Add 10% padding
+            width = max_x - min_x
+            height = max_y - min_y
+            pad_x = width * 0.1 if width > 0 else 10
+            pad_y = height * 0.1 if height > 0 else 10
+            
+            return (min_x - pad_x, min_y - pad_y, max_x + pad_x, max_y + pad_y)
+        
+        return None
+    except Exception as e:
+        logger.warning(f"Could not calculate DXF bounds: {e}")
+        return None
+# ============================================================================
+# DXF PREVIEW FUNCTION
+# ============================================================================
+def render_dxf_clean(file_bytes):
+    """
+    Generate a clean preview of a DXF file by reusing the identical‑file branch
+    but with the title text suppressed.
+    """
+    import io
+    # Call process_cad_files with the same file twice and an option to skip the title
+    # We'll need to modify process_cad_files to accept a skip_title argument.
+    # Since we can't change the existing function signature easily, we'll copy the identical branch code.
+    # But to avoid duplication, let's create a separate internal function.
+    return _render_dxf_from_bytes(file_bytes, preview_mode=True)
+
+def render_dxf_preview(file_bytes):
+    """Generate a clean preview of a DXF file by reusing the QA renderer with no overlays."""
+    import io
+    # Call process_cad_files with the same file for both inputs and options that turn off all overlays
+    opts = {
+        "moved": False,
+        "modified": False,
+        "missing": False,
+        "added": False,
+        "clash": False,
+        "labels": False,
+        "outlinesOnly": False
+    }
+    # Since process_cad_files expects two files, we pass the same bytes for both
+    img_bytes, _ = process_cad_files(file_bytes, file_bytes, opts)
+    return img_bytes
