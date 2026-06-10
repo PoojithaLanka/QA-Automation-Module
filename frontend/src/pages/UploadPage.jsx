@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
+import { Bar } from 'react-chartjs-2';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
 export default function UploadPage() {
   const [file1, setFile1] = useState(null);
@@ -9,6 +13,7 @@ export default function UploadPage() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [report, setReport] = useState(null);
 
   const [imageOptions, setImageOptions] = useState({
     annotation: true,
@@ -49,6 +54,7 @@ export default function UploadPage() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setReport(null);
 
     const formData = new FormData();
     formData.append("file1", file1);
@@ -59,6 +65,7 @@ export default function UploadPage() {
     try {
       const res = await axios.post("http://127.0.0.1:8000/analyze", formData);
       setResult(res.data.image);
+      setReport(res.data.report);
     } catch (err) {
       console.error(err);
       setError(err.response?.data?.detail || err.message || "Unknown error");
@@ -97,13 +104,7 @@ export default function UploadPage() {
   const renderPreview = (file, previewUrl) => {
     if (!file) return <p className="preview-placeholder">No file selected</p>;
     if (file.type === "application/pdf") {
-      return (
-        <iframe
-          src={previewUrl}
-          title="PDF Preview"
-          className="preview-iframe"
-        />
-      );
+      return <iframe src={previewUrl} title="PDF Preview" className="preview-iframe" />;
     }
     if (isDxf(file)) {
       return (
@@ -114,18 +115,62 @@ export default function UploadPage() {
         </div>
       );
     }
+    return <img src={previewUrl} alt="Preview" className="preview-image" />;
+  };
+
+  const getChartData = () => {
+    if (!report || report.identical) return null;
+    if (report.moved !== undefined) {
+      return {
+        labels: ['Moved', 'Modified', 'Missing', 'Added', 'Clashes'],
+        datasets: [{
+          label: 'Count',
+          data: [report.moved, report.modified, report.missing, report.added, report.clashes],
+          backgroundColor: ['#FFA500', '#FF4444', '#FF3333', '#33CC55', '#CC33FF'],
+          borderRadius: 8
+        }]
+      };
+    } else {
+      return {
+        labels: ['Changes', 'Clashes', 'Unlabeled'],
+        datasets: [{
+          label: 'Count',
+          data: [report.changes, report.clashes, report.annotation_missing],
+          backgroundColor: ['#FFA500', '#FF4444', '#FF3333'],
+          borderRadius: 8
+        }]
+      };
+    }
+  };
+
+  // Helper to render table for a category
+  const renderTable = (title, items, columns) => {
+    if (!items || items.length === 0) return null;
     return (
-      <img
-        src={previewUrl}
-        alt="Preview"
-        className="preview-image"
-      />
+      <div className="table-category">
+        <h4>{title} ({items.length})</h4>
+        <div className="table-wrapper">
+          <table className="qa-table">
+            <thead>
+              <tr>
+                {columns.map(col => <th key={col.key}>{col.label}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, idx) => (
+                <tr key={idx}>
+                  {columns.map(col => <td key={col.key}>{item[col.key] || '-'}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     );
   };
 
   return (
     <div className="dashboard">
-      {/* Header with logo */}
       <header className="dashboard-header">
         <img src="/logo.png" alt="PRAXSOL" className="logo" />
         <div className="header-title">
@@ -134,7 +179,6 @@ export default function UploadPage() {
         </div>
       </header>
 
-      {/* Upload Cards */}
       <div className="upload-cards">
         <div
           className={`upload-card ${dragging1 ? "drag-over" : ""}`}
@@ -144,13 +188,7 @@ export default function UploadPage() {
         >
           <div className="upload-icon">📄</div>
           <h3>Input Drawing</h3>
-          <input
-            type="file"
-            id="file1"
-            accept=".png,.jpg,.jpeg,.pdf,.dxf"
-            onChange={(e) => handleFileSelect(1, e)}
-            style={{ display: "none" }}
-          />
+          <input type="file" id="file1" accept=".png,.jpg,.jpeg,.pdf,.dxf" onChange={(e) => handleFileSelect(1, e)} style={{ display: "none" }} />
           <label htmlFor="file1" className="file-label">Choose file</label>
           <span className="file-name">{file1 ? file1.name : "or drag & drop"}</span>
         </div>
@@ -163,19 +201,12 @@ export default function UploadPage() {
         >
           <div className="upload-icon">📄</div>
           <h3>Output Drawing</h3>
-          <input
-            type="file"
-            id="file2"
-            accept=".png,.jpg,.jpeg,.pdf,.dxf"
-            onChange={(e) => handleFileSelect(2, e)}
-            style={{ display: "none" }}
-          />
+          <input type="file" id="file2" accept=".png,.jpg,.jpeg,.pdf,.dxf" onChange={(e) => handleFileSelect(2, e)} style={{ display: "none" }} />
           <label htmlFor="file2" className="file-label">Choose file</label>
           <span className="file-name">{file2 ? file2.name : "or drag & drop"}</span>
         </div>
       </div>
 
-      {/* Preview Section */}
       {(preview1 || preview2) && (
         <div className="preview-grid">
           <div className="preview-card">
@@ -189,7 +220,6 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* Options Panel */}
       {file1 && file2 && (
         <div className="options-panel">
           <h3>{isCadMode ? "CAD Analysis Options" : "Image / PDF Analysis Options"}</h3>
@@ -224,13 +254,8 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* Action Button */}
       <button className="qa-button" onClick={runQA} disabled={loading}>
-        {loading ? (
-          <span className="spinner"></span>
-        ) : (
-          "Run QA Analysis"
-        )}
+        {loading ? <span className="spinner"></span> : "Run QA Analysis"}
       </button>
 
       {error && <div className="error-message">{error}</div>}
@@ -239,6 +264,94 @@ export default function UploadPage() {
         <div className="result-section">
           <h2>QA Result</h2>
           <img src={result} alt="QA Result" className="result-image" />
+        </div>
+      )}
+
+      {/* Report Section */}
+      {report && (
+        <div className="report-section">
+          <h3>QA Report</h3>
+          {report.identical && <p className="success-message">✅ No differences detected. The two drawings are identical.</p>}
+          {!report.identical && !report.error && (
+            <>
+              <div className="report-stats">
+                {report.moved !== undefined ? (
+                  <>
+                    <div className="stat-card">Moved: {report.moved}</div>
+                    <div className="stat-card">Modified: {report.modified}</div>
+                    <div className="stat-card">Missing: {report.missing}</div>
+                    <div className="stat-card">Added: {report.added}</div>
+                    <div className="stat-card">Clashes: {report.clashes}</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="stat-card">Changes: {report.changes}</div>
+                    <div className="stat-card">Clashes: {report.clashes}</div>
+                    <div className="stat-card">Unlabeled: {report.annotation_missing}</div>
+                  </>
+                )}
+              </div>
+
+              {getChartData() && (
+                <div className="chart-container">
+                  <Bar data={getChartData()} options={{ responsive: true, maintainAspectRatio: true, plugins: { legend: { position: 'top' } } }} />
+                </div>
+              )}
+
+              {/* Professional Tables for CAD Reports */}
+              {report.moved !== undefined && report.details ? (
+                <div className="report-tables">
+                  {renderTable("📌 Moved Entities", report.details.moved, [
+                    { key: "type", label: "Type" },
+                    { key: "label", label: "Label" },
+                    { key: "layer", label: "Layer" },
+                    { key: "change_description", label: "Change Description" },
+                    { key: "position", label: "New Position" }
+                  ])}
+                  {renderTable("🔧 Modified Entities", report.details.modified, [
+                    { key: "type", label: "Type" },
+                    { key: "label", label: "Label" },
+                    { key: "layer", label: "Layer" },
+                    { key: "change_description", label: "Change Description" },
+                    { key: "position", label: "Position" }
+                  ])}
+                  {renderTable("❌ Missing Entities", report.details.missing, [
+                    { key: "type", label: "Type" },
+                    { key: "label", label: "Label" },
+                    { key: "layer", label: "Layer" },
+                    { key: "position", label: "Position" }
+                  ])}
+                  {renderTable("➕ Added Entities", report.details.added, [
+                    { key: "type", label: "Type" },
+                    { key: "label", label: "Label" },
+                    { key: "layer", label: "Layer" },
+                    { key: "position", label: "Position" }
+                  ])}
+                  {renderTable("⚡ Clashes", report.details.clashes, [
+                    { key: "type", label: "Types" },
+                    { key: "label", label: "Description" },
+                    { key: "layer", label: "Layer" },
+                    { key: "position", label: "Position" }
+                  ])}
+                </div>
+              ) : (
+                // Simple list for image reports (no detailed tables)
+                report.details && (
+                  <details className="report-details">
+                    <summary>View detailed list</summary>
+                    <div className="detail-list">
+                      {report.details.moved?.length > 0 && <div><strong>Moved:</strong><ul>{report.details.moved.map((d, i) => <li key={i}>{d}</li>)}</ul></div>}
+                      {report.details.modified?.length > 0 && <div><strong>Modified:</strong><ul>{report.details.modified.map((d, i) => <li key={i}>{d}</li>)}</ul></div>}
+                      {report.details.missing?.length > 0 && <div><strong>Missing:</strong><ul>{report.details.missing.map((d, i) => <li key={i}>{d}</li>)}</ul></div>}
+                      {report.details.added?.length > 0 && <div><strong>Added:</strong><ul>{report.details.added.map((d, i) => <li key={i}>{d}</li>)}</ul></div>}
+                      {report.details.clashes?.length > 0 && <div><strong>Clashes:</strong><ul>{report.details.clashes.map((d, i) => <li key={i}>{d}</li>)}</ul></div>}
+                    </div>
+                  </details>
+                )
+              )}
+            </>
+          )}
+          {report.error && <p className="error-message">Error: {report.error}</p>}
         </div>
       )}
     </div>

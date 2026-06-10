@@ -368,7 +368,6 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
     return buf.getvalue()
 
 def process_cad_files(file1_bytes, file2_bytes, opts):
-    """Main entry point for CAD pipeline: returns PNG bytes."""
     import io
     try:
         stream1 = io.BytesIO(file1_bytes)
@@ -378,13 +377,12 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
         ea = extract_entities(doc_a)
         eb = extract_entities(doc_b)
 
-        # Check if both entity lists are identical
+        # Check for identical
         if len(ea) == len(eb) and all(
             a['shape_key'] == b['shape_key'] and
             approx_eq(a['cx'], b['cx']) and approx_eq(a['cy'], b['cy'])
             for a, b in zip(ea, eb)
         ):
-            # No difference – return a clean image with "NO DIFFERENCE DETECTED"
             fig, ax = plt.subplots(figsize=(16, 16))
             ctx = RenderContext(doc_b)
             backend = MatplotlibBackend(ax)
@@ -395,16 +393,96 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
             buf = io.BytesIO()
             plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#111111')
             plt.close(fig)
-            return buf.getvalue()
+            report = {
+                "identical": True,
+                "moved": 0, "modified": 0, "missing": 0, "added": 0, "clashes": 0,
+                "details": {
+                    "moved": [], "modified": [], "missing": [], "added": [], "clashes": []
+                }
+            }
+            return buf.getvalue(), report
 
         diff = compare_dxf(ea, eb)
         img_bytes = generate_qa_image(doc_b, diff, "input.dxf", "output.dxf", opts)
-        return img_bytes
+
+        # Build detailed lists with extra fields
+        moved_details = []
+        for item in diff['moved']:
+            a = item['from']
+            b = item['to']
+            moved_details.append({
+                "type": a['type'],
+                "label": item['label'],
+                "layer": a.get('layer', '0'),
+                "change_description": f"Moved from ({a['cx']:.1f},{a['cy']:.1f}) to ({b['cx']:.1f},{b['cy']:.1f})",
+                "position": f"({b['cx']:.1f}, {b['cy']:.1f})"
+            })
+
+        modified_details = []
+        for item in diff['modified']:
+            a = item['from']
+            b = item['to']
+            modified_details.append({
+                "type": a['type'],
+                "label": item['label'],
+                "layer": a.get('layer', '0'),
+                "change_description": item['label'],
+                "position": f"({b.get('cx', 0):.1f}, {b.get('cy', 0):.1f})"
+            })
+
+        missing_details = []
+        for item in diff['missing']:
+            missing_details.append({
+                "type": item['type'],
+                "label": item.get('label', 'Unknown'),
+                "layer": item.get('layer', '0'),
+                "change_description": "Missing in output",
+                "position": f"({item.get('cx', 0):.1f}, {item.get('cy', 0):.1f})"
+            })
+
+        added_details = []
+        for item in diff['added']:
+            added_details.append({
+                "type": item['type'],
+                "label": item.get('label', 'Unknown'),
+                "layer": item.get('layer', '0'),
+                "change_description": "Added (not in input)",
+                "position": f"({item.get('cx', 0):.1f}, {item.get('cy', 0):.1f})"
+            })
+
+        clash_details = []
+        for item in diff['clashes']:
+            a = item['a']
+            b = item['b']
+            clash_details.append({
+                "type": a['type'],
+                "label": f"{a.get('label', '?')} ↔ {b.get('label', '?')}",
+                "layer": a.get('layer', '0'),
+                "change_description": f"Clash between {a['type']} and {b['type']}",
+                "position": f"({a.get('cx', 0):.1f}, {a.get('cy', 0):.1f})"
+            })
+
+        report = {
+            "identical": False,
+            "moved": len(moved_details),
+            "modified": len(modified_details),
+            "missing": len(missing_details),
+            "added": len(added_details),
+            "clashes": len(clash_details),
+            "details": {
+                "moved": moved_details,
+                "modified": modified_details,
+                "missing": missing_details,
+                "added": added_details,
+                "clashes": clash_details
+            }
+        }
+        return img_bytes, report
     except Exception as e:
-        # Return a simple error image
         fig, ax = plt.subplots(figsize=(8,6))
         ax.text(0.5, 0.5, f"CAD Error: {str(e)}", ha='center', va='center', transform=ax.transAxes, color='red')
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         plt.close(fig)
-        return buf.getvalue()
+        report = {"error": str(e)}
+        return buf.getvalue(), report

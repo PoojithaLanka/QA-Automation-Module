@@ -8,6 +8,7 @@ import fitz  # PyMuPDF
 import base64
 
 from app.qa_engine import run_qa_analysis
+from app.qa_engine import run_qa_with_report
 from app.cad_engine import process_cad_files
 
 app = FastAPI()
@@ -56,39 +57,19 @@ async def analyze(
     file2: UploadFile = File(...),
     options: str = Form(...)
 ):
-
     opts = json.loads(options)
-
-    # -------------------------
-    # READ FILES AS BYTES
-    # -------------------------
     file1_bytes = await file1.read()
     file2_bytes = await file2.read()
 
-    # ----- NEW: DXF detection -----
     is_dxf1 = file1.filename.lower().endswith('.dxf')
     is_dxf2 = file2.filename.lower().endswith('.dxf')
 
     if is_dxf1 and is_dxf2:
-        # CAD pipeline
-        img_bytes = process_cad_files(file1_bytes, file2_bytes, opts)
-        return {"image": "data:image/png;base64," + base64.b64encode(img_bytes).decode()}
-    # -------------------------
-    # CONVERT TO UNIFIED FORMAT
-    # -------------------------
-    img1 = load_input(file1_bytes, file1.filename)
-    img2 = load_input(file2_bytes, file2.filename)
+        img_bytes, report = process_cad_files(file1_bytes, file2_bytes, opts)
+    else:
+        img1 = load_input(file1_bytes, file1.filename)
+        img2 = load_input(file2_bytes, file2.filename)
+        img_bytes, report = run_qa_with_report(img1, img2, opts)
 
-    # -------------------------
-    # RUN EXISTING QA ENGINE (NO CHANGE)
-    # -------------------------
-    result_img = run_qa_analysis(img1, img2, opts)
-
-    # -------------------------
-    # ENCODE OUTPUT
-    # -------------------------
-    _, buffer = cv2.imencode(".png", result_img)
-
-    return {
-        "image": "data:image/png;base64," + base64.b64encode(buffer).decode()
-    }
+    b64_img = base64.b64encode(img_bytes).decode()
+    return {"image": f"data:image/png;base64,{b64_img}", "report": report}
