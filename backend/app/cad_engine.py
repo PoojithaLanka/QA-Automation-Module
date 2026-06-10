@@ -377,6 +377,26 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
         doc_b, _ = recover.read(stream2)
         ea = extract_entities(doc_a)
         eb = extract_entities(doc_b)
+
+        # Check if both entity lists are identical
+        if len(ea) == len(eb) and all(
+            a['shape_key'] == b['shape_key'] and
+            approx_eq(a['cx'], b['cx']) and approx_eq(a['cy'], b['cy'])
+            for a, b in zip(ea, eb)
+        ):
+            # No difference – return a clean image with "NO DIFFERENCE DETECTED"
+            fig, ax = plt.subplots(figsize=(16, 16))
+            ctx = RenderContext(doc_b)
+            backend = MatplotlibBackend(ax)
+            Frontend(ctx, backend).draw_layout(doc_b.modelspace(), finalize=True)
+            ax.set_title("NO DIFFERENCE DETECTED", fontsize=20, fontweight='bold',
+                         color='green', pad=20, loc='center')
+            ax.set_axis_off()
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#111111')
+            plt.close(fig)
+            return buf.getvalue()
+
         diff = compare_dxf(ea, eb)
         img_bytes = generate_qa_image(doc_b, diff, "input.dxf", "output.dxf", opts)
         return img_bytes
