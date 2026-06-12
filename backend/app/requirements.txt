@@ -7,3 +7,7 @@ easyocr
 pandas
 matplotlib
 python-multipart
+PyMuPDF
+ezdxf
+scipy
+pytest

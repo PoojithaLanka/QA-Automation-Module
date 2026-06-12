@@ -1,0 +1,22 @@
+{
+  "cad_engine": {
+    "tolerance_position": 0.001,
+    "tolerance_length": 0.01,
+    "proximity_multiplier": 1.5,
+    "default_proximity": 5.0,
+    "matching_cost_threshold": 1.5,
+    "clash_margin": 5.0,
+    "text_similarity_threshold": 0.8,
+    "dimension_tolerance": 0.05,
+    "polyline_closed_distance_tol": 0.01,
+    "min_bbox_pad": 5.0,
+    "min_entity_area_ratio": 0.1,
+    "max_entity_aspect_ratio": 12.0,
+    "voting_rounding": 0.1,
+    "shape_key_rounding_digits": 3,
+    "label_rounding_digits": 2,
+    "angle_grouping": 1.0,
+    "length_grouping": 0.5,
+    "radius_grouping": 0.5
+  }
+}

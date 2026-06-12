@@ -11,6 +11,9 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from collections import defaultdict
 import logging
+import json
+import os
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +21,52 @@ logger = logging.getLogger(__name__)
 import matplotlib
 matplotlib.use('Agg')
 
-# ---------- Tolerance settings ----------
-TOL_POS = 1e-3
-TOL_LEN = 1e-2
+# ----------------------------------------------------------------------
+# Load configuration
+# ----------------------------------------------------------------------
+def load_cad_config():
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    try:
+        with open(config_path, 'r') as f:
+            full = json.load(f)
+            return full.get('cad_engine', {})
+    except Exception as e:
+        logger.warning(f"Could not load config.json, using defaults: {e}")
+        return {}
+
+CAD_CFG = load_cad_config()
+
+def get_cfg(key, default):
+    return CAD_CFG.get(key, default)
+
+# ----------------------------------------------------------------------
+# Tunable parameters
+# ----------------------------------------------------------------------
+TOL_POS = get_cfg('tolerance_position', 1e-3)
+TOL_LEN = get_cfg('tolerance_length', 1e-2)
+PROX_MULT = get_cfg('proximity_multiplier', 1.5)
+DEFAULT_PROX = get_cfg('default_proximity', 5.0)
+MATCH_COST_THRESH = get_cfg('matching_cost_threshold', 1.5)
+CLASH_MARGIN = get_cfg('clash_margin', 5.0)
+TEXT_SIM_THRESH = get_cfg('text_similarity_threshold', 0.8)
+DIM_TOL = get_cfg('dimension_tolerance', 0.05)
+POLY_CLOSE_TOL = get_cfg('polyline_closed_distance_tol', 0.01)
+VOTING_ROUND = get_cfg('voting_rounding', 0.1)
+SHAPE_KEY_DIGITS = get_cfg('shape_key_rounding_digits', 3)
+LABEL_DIGITS = get_cfg('label_rounding_digits', 2)
 
 def approx_eq(a, b, tol=TOL_POS):
     return math.isclose(a, b, rel_tol=1e-6, abs_tol=tol)
 
-def rnd(v, digits=2):
+def rnd(v, digits=LABEL_DIGITS):
     return round(float(v), digits)
 
-# ---------- Entity extraction (simplified for web) ----------
+def shape_key_round(v):
+    return round(v, SHAPE_KEY_DIGITS)
+
+# ----------------------------------------------------------------------
+# Geometry helpers
+# ----------------------------------------------------------------------
 def bbox(pts):
     if not pts: return None
     xs = [p[0] for p in pts]
@@ -49,23 +87,31 @@ def polyline_fingerprint(pts, closed):
         if p2 is None:
             break
         length = p1.distance(p2)
-        edges.append(rnd(length, 3))
+        edges.append(shape_key_round(length))
         angle = math.degrees(math.atan2(p2.y - p1.y, p2.x - p1.x)) % 360
         if i > 0:
             turn = (angle - prev_angle) % 360
             if turn > 180:
                 turn -= 360
-            angles.append(rnd(turn, 1))
+            angles.append(round(turn, 1))
         prev_angle = angle
     return (closed, len(pts), tuple(edges), tuple(angles))
 
-def extract_entities(doc):
+# ----------------------------------------------------------------------
+# Entity extraction (with error handling and attribute support)
+# ----------------------------------------------------------------------
+def extract_entities(doc, warnings=None):
+    if warnings is None:
+        warnings = []
     ents = []
     for e in doc.modelspace():
-        p = _parse_entity(e)
-        if p:
-            ents.append(p)
-    return ents
+        try:
+            p = _parse_entity(e)
+            if p:
+                ents.append(p)
+        except Exception as ex:
+            warnings.append(f"Skipped entity {e.dxftype()}: {str(ex)}")
+    return ents, warnings
 
 def _parse_entity(e):
     t = e.dxftype()
@@ -74,25 +120,25 @@ def _parse_entity(e):
         if t == 'CIRCLE':
             c = e.dxf.center
             r = e.dxf.radius
-            sk = f"CIRCLE|r={rnd(r,3)}|layer={layer}"
+            sk = f"CIRCLE|r={shape_key_round(r)}|layer={layer}"
             return {'type':'CIRCLE','shape_key':sk,'cx':c.x,'cy':c.y,'r':r,'layer':layer,
-                    'bbox':(c.x-r,c.y-r,c.x+r,c.y+r),'label':f'Circle r={rnd(r,2)}'}
+                    'bbox':(c.x-r,c.y-r,c.x+r,c.y+r),'label':f'Circle r={rnd(r)}'}
         elif t == 'ARC':
             c = e.dxf.center; r = e.dxf.radius; sa = e.dxf.start_angle; ea = e.dxf.end_angle
             span = (ea - sa) % 360
-            sk = f"ARC|r={rnd(r,3)}|span={rnd(span,1)}|layer={layer}"
+            sk = f"ARC|r={shape_key_round(r)}|span={round(span,1)}|layer={layer}"
             return {'type':'ARC','shape_key':sk,'cx':c.x,'cy':c.y,'r':r,'sa':sa,'ea':ea,'layer':layer,
-                    'bbox':(c.x-r,c.y-r,c.x+r,c.y+r),'label':f'Arc r={rnd(r,2)} span={rnd(span,1)}°'}
+                    'bbox':(c.x-r,c.y-r,c.x+r,c.y+r),'label':f'Arc r={rnd(r)} span={round(span,1)}°'}
         elif t == 'LINE':
             s, e_pt = e.dxf.start, e.dxf.end
             length = s.distance(e_pt); angle = math.degrees(math.atan2(e_pt.y - s.y, e_pt.x - s.x)) % 180
-            sk = f"LINE|len={rnd(length,3)}|ang={rnd(angle,1)}|layer={layer}"
+            sk = f"LINE|len={shape_key_round(length)}|ang={round(angle,1)}|layer={layer}"
             return {'type':'LINE','shape_key':sk,'cx':(s.x+e_pt.x)/2,'cy':(s.y+e_pt.y)/2,'layer':layer,
-                    'bbox':bbox([(s.x,s.y),(e_pt.x,e_pt.y)]),'label':f'Line len={rnd(length,2)}'}
+                    'bbox':bbox([(s.x,s.y),(e_pt.x,e_pt.y)]),'label':f'Line len={rnd(length)}'}
         elif t == 'LWPOLYLINE':
             pts = [(p[0],p[1]) for p in e.get_points()]
             if len(pts)<2: return None
-            closed = bool(e.closed or (len(pts)>=3 and math.dist(pts[0],pts[-1])<TOL_LEN))
+            closed = bool(e.closed or (len(pts)>=3 and math.dist(pts[0],pts[-1])<POLY_CLOSE_TOL))
             fp = polyline_fingerprint(pts, closed)
             if not fp: return None
             sk = f"LWPOLY|fp={fp}|layer={layer}"
@@ -104,41 +150,79 @@ def _parse_entity(e):
             pt = e.dxf.defpoint
             meas = e.dxf.actual_measurement if hasattr(e.dxf,'actual_measurement') else None
             txt = (getattr(e.dxf,'text','') or '').strip()
-            meas_key = rnd(meas,3) if meas is not None else txt
+            if meas is not None:
+                meas_rounded = round(meas, 2)
+                meas_key = str(meas_rounded)
+            else:
+                meas_rounded = None
+                meas_key = txt
             sk = f"DIM|meas={meas_key}|layer={layer}"
             return {'type':'DIMENSION','shape_key':sk,'cx':pt.x,'cy':pt.y,'layer':layer,
-                    'meas':meas,'txt':txt,'bbox':(pt.x-5,pt.y-5,pt.x+5,pt.y+5),'label':f'Dim {meas if meas else txt}'}
+                    'meas':meas, 'meas_rounded':meas_rounded, 'txt':txt,
+                    'bbox':(pt.x-5,pt.y-5,pt.x+5,pt.y+5),'label':f'Dim {meas if meas else txt}'}
         elif t in ('MTEXT','TEXT'):
             pos = e.dxf.insert
             raw = e.text if t=='MTEXT' else e.dxf.text
             import re
-            clean = re.sub(r'\\[A-Za-z][^;]*;','',raw).strip()
-            sk = f"TEXT|txt={clean}|layer={layer}"
+            clean = re.sub(r'\\[A-Za-z][^;]*;', '', raw).strip()
+            normalised = re.sub(r'[\s\(\)\{\}\[\]\.\,\-\_\*\&]', '', clean).upper()
+            sk = f"TEXT|txt={normalised}|layer={layer}"
             return {'type':'TEXT','shape_key':sk,'cx':pos.x,'cy':pos.y,'layer':layer,
-                    'txt':clean,'bbox':(pos.x,pos.y,pos.x+len(clean)*2.5,pos.y+2.5),'label':f'Text "{clean[:20]}"'}
+                    'txt':clean, 'norm_txt':normalised,
+                    'bbox':(pos.x,pos.y,pos.x+len(clean)*2.5,pos.y+2.5),'label':f'Text "{clean[:20]}"'}
         elif t == 'INSERT':
-            pt = e.dxf.insert; name = e.dxf.name; rot = getattr(e.dxf,'rotation',0)
-            sk = f"INSERT|name={name}|rot={rnd(rot,1)}|layer={layer}"
-            return {'type':'INSERT','shape_key':sk,'cx':pt.x,'cy':pt.y,'layer':layer,
-                    'name':name,'rot':rot,'bbox':(pt.x-6,pt.y-6,pt.x+6,pt.y+6),'label':f'Symbol "{name}"'}
+            pt = e.dxf.insert
+            name = e.dxf.name
+            rot = getattr(e.dxf, 'rotation', 0)
+            # Extract attributes
+            attrs = {}
+            try:
+                for attrib in e.attribs:
+                    tag = attrib.dxf.tag
+                    value = attrib.dxf.text
+                    attrs[tag] = value
+            except Exception:
+                pass
+            sk = f"INSERT|name={name}|rot={round(rot,1)}|layer={layer}"
+            return {
+                'type': 'INSERT',
+                'shape_key': sk,
+                'cx': pt.x,
+                'cy': pt.y,
+                'layer': layer,
+                'name': name,
+                'rot': rot,
+                'attributes': attrs,
+                'bbox': (pt.x-6, pt.y-6, pt.x+6, pt.y+6),
+                'label': f'Block: {name}' + (f' {attrs}' if attrs else '')
+            }
         elif t == 'ELLIPSE':
-            c = e.dxf.center; maj = e.dxf.major_axis; ratio = e.dxf.ratio; mag = maj.magnitude
-            sk = f"ELLIPSE|mag={rnd(mag,3)}|ratio={rnd(ratio,4)}|layer={layer}"
+            c = e.dxf.center
+            maj = e.dxf.major_axis
+            ratio = e.dxf.ratio
+            mag = maj.magnitude
+            sk = f"ELLIPSE|mag={shape_key_round(mag)}|ratio={round(ratio,4)}|layer={layer}"
             return {'type':'ELLIPSE','shape_key':sk,'cx':c.x,'cy':c.y,'layer':layer,
-                    'bbox':(c.x-mag,c.y-mag,c.x+mag,c.y+mag),'label':f'Ellipse mag={rnd(mag,2)}'}
+                    'bbox':(c.x-mag,c.y-mag,c.x+mag,c.y+mag),'label':f'Ellipse mag={rnd(mag)}'}
         elif t == 'SPLINE':
             pts = [(p[0],p[1]) for p in e.control_points]
             if len(pts)<2: return None
             total_len = sum(math.dist(pts[i],pts[i+1]) for i in range(len(pts)-1))
-            sk = f"SPLINE|n={len(pts)}|len={rnd(total_len,3)}|layer={layer}"
+            sk = f"SPLINE|n={len(pts)}|len={shape_key_round(total_len)}|layer={layer}"
             cx = sum(p[0] for p in pts)/len(pts); cy = sum(p[1] for p in pts)/len(pts)
             return {'type':'SPLINE','shape_key':sk,'cx':cx,'cy':cy,'layer':layer,
                     'bbox':bbox(pts),'label':'Spline'}
+        elif t == 'HATCH':
+            # No geometric meaning for QA – ignore silently
+            return None
     except Exception:
-        pass
+        # Let the exception bubble up to extract_entities
+        raise
     return None
 
-# ---------- Offset detection & matching (same as Colab) ----------
+# ----------------------------------------------------------------------
+# Offset detection and matching
+# ----------------------------------------------------------------------
 def detect_offset_voting(ea, eb):
     votes = defaultdict(int)
     b_by_shape = defaultdict(list)
@@ -150,7 +234,8 @@ def detect_offset_voting(ea, eb):
             continue
         best = min(matches, key=lambda b: math.hypot(b['cx']-a['cx'], b['cy']-a['cy']))
         dx = best['cx'] - a['cx']; dy = best['cy'] - a['cy']
-        qdx = round(dx*10)/10.0; qdy = round(dy*10)/10.0
+        qdx = round(dx / VOTING_ROUND) * VOTING_ROUND
+        qdy = round(dy / VOTING_ROUND) * VOTING_ROUND
         votes[(qdx,qdy)] += 1
     if not votes:
         return 0.0,0.0
@@ -181,93 +266,261 @@ def estimate_proximity(ea, eb):
         best = min(candidates, key=lambda b: math.hypot(b['cx']-(a['cx']+dx), b['cy']-(a['cy']+dy)))
         dist = math.hypot(best['cx']-(a['cx']+dx), best['cy']-(a['cy']+dy))
         distances.append(dist)
-    return np.median(distances) * 1.5 if distances else 5.0
+    if distances:
+        return np.median(distances) * PROX_MULT
+    return DEFAULT_PROX
 
 REAL_GEO = {'LINE','CIRCLE','ARC','LWPOLYLINE','ELLIPSE','SPLINE'}
 
-def compare_dxf(ea_orig, eb_orig):
-    dx, dy = detect_offset_voting(ea_orig, eb_orig)
-    ea = shift_entities(ea_orig, dx, dy)
-    prox = estimate_proximity(ea, eb_orig)
+def text_similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
 
-    types = set(e['type'] for e in ea) | set(e['type'] for e in eb_orig)
-    matched_pairs = []
-    a_unmatched = []
-    b_unmatched = []
-
-    for typ in types:
-        a_list = [e for e in ea if e['type']==typ]
-        b_list = [e for e in eb_orig if e['type']==typ]
-        if not a_list or not b_list:
-            a_unmatched.extend(a_list)
-            b_unmatched.extend(b_list)
+def detect_offset_per_layer(ea_global, eb, global_dx, global_dy):
+    """
+    After global offset, compute per‑layer offsets using voting.
+    Returns dict {layer: (dx, dy)}.
+    """
+    from collections import defaultdict
+    layer_offsets = {}
+    # Group ea by layer
+    ea_by_layer = defaultdict(list)
+    for e in ea_global:
+        layer = e.get('layer', '0')
+        ea_by_layer[layer].append(e)
+    # For each layer, vote on offset
+    for layer, e_list in ea_by_layer.items():
+        if len(e_list) < 2:   # need at least 2 entities for a reliable vote
             continue
-        cost = np.zeros((len(a_list), len(b_list)))
-        for i,a in enumerate(a_list):
-            for j,b in enumerate(b_list):
-                shape_cost = 0.0 if a['shape_key']==b['shape_key'] else 1.0
-                pos_dist = math.hypot(a['cx']-b['cx'], a['cy']-b['cy'])
-                pos_cost = min(pos_dist/prox, 1.0) if prox>0 else 0.0
-                cost[i,j] = shape_cost + pos_cost
+        votes = defaultdict(int)
+        # Build shape_key map for eb (output)
+        b_by_shape = defaultdict(list)
+        for e in eb:
+            b_by_shape[e['shape_key']].append(e)
+        for a in e_list:
+            matches = b_by_shape.get(a['shape_key'], [])
+            if not matches:
+                continue
+            best = min(matches, key=lambda b: math.hypot(b['cx'] - a['cx'], b['cy'] - a['cy']))
+            dx = best['cx'] - a['cx']
+            dy = best['cy'] - a['cy']
+            qdx = round(dx / VOTING_ROUND) * VOTING_ROUND
+            qdy = round(dy / VOTING_ROUND) * VOTING_ROUND
+            votes[(qdx, qdy)] += 1
+        if votes:
+            # Most frequent offset for this layer
+            offset = max(votes.items(), key=lambda kv: kv[1])[0]
+            layer_offsets[layer] = offset
+    return layer_offsets
+
+def compare_dxf(ea_orig, eb_orig, warnings=None):
+    if warnings is None:
+        warnings = []
+    try:
+        dx, dy = detect_offset_voting(ea_orig, eb_orig)
+        ea = shift_entities(ea_orig, dx, dy)
+        prox = estimate_proximity(ea, eb_orig)
+    except Exception as e:
+        warnings.append(f"Offset/proximity estimation failed: {str(e)}")
+        dx, dy = 0, 0
+        ea = ea_orig
+        prox = DEFAULT_PROX
+
+    # Per‑layer offset detection
+    try:
+        layer_offsets = detect_offset_per_layer(ea, eb_orig, dx, dy)
+        for e in ea:
+            layer = e.get('layer', '0')
+            if layer in layer_offsets:
+                off_x, off_y = layer_offsets[layer]
+                e['cx'] += off_x
+                e['cy'] += off_y
+                if 'bbox' in e:
+                    x1, y1, x2, y2 = e['bbox']
+                    e['bbox'] = (x1 + off_x, y1 + off_y, x2 + off_x, y2 + off_y)
+                if 'pts' in e:
+                    e['pts'] = [(x + off_x, y + off_y) for x, y in e['pts']]
+    except Exception as e:
+        warnings.append(f"Per‑layer offset detection failed: {str(e)}")
+
+    # ---- Stage 1: Exact shape_key matching ----
+    # Copy entities to avoid modifying originals
+    ea_remaining = list(ea)
+    eb_remaining = list(eb_orig)
+    matched_pairs = []
+    # Group input by shape_key for fast lookup
+    from collections import defaultdict
+    groups_a = defaultdict(list)
+    for e in ea_remaining:
+        groups_a[(e['type'], e['shape_key'])].append(e)
+    groups_b = defaultdict(list)
+    for e in eb_remaining:
+        groups_b[(e['type'], e['shape_key'])].append(e)
+
+    # For each exact shape_key group, run Hungarian to pair by position
+    for key, a_list in groups_a.items():
+        b_list = groups_b.get(key, [])
+        if not a_list or not b_list:
+            continue
+        n = len(a_list)
+        m = len(b_list)
+        cost = np.zeros((n, m))
+        for i, a in enumerate(a_list):
+            for j, b in enumerate(b_list):
+                pos_dist = math.hypot(a['cx'] - b['cx'], a['cy'] - b['cy'])
+                pos_cost = min(pos_dist / prox, 1.0) if prox > 0 else 0.0
+                cost[i, j] = pos_cost  # shape_cost = 0 (identical)
         row_ind, col_ind = linear_sum_assignment(cost)
-        used_a = set(); used_b = set()
-        for r,c in zip(row_ind, col_ind):
-            if cost[r,c] < 1.5:
+        used_a = set()
+        used_b = set()
+        for r, c in zip(row_ind, col_ind):
+            if cost[r, c] < MATCH_COST_THRESH:
                 matched_pairs.append((a_list[r], b_list[c]))
-                used_a.add(r); used_b.add(c)
-        for i,a in enumerate(a_list):
-            if i not in used_a:
-                a_unmatched.append(a)
-        for j,b in enumerate(b_list):
-            if j not in used_b:
-                b_unmatched.append(b)
+                used_a.add(r)
+                used_b.add(c)
+        # Remove matched entities from remaining lists (by reference)
+        # We'll rebuild unmatched later
+    # Build remaining lists after exact matching
+    a_unmatched_stage1 = []
+    for a in ea_remaining:
+        # Check if a was matched (by comparing with matched_pairs)
+        matched = any(a is pair[0] for pair in matched_pairs)
+        if not matched:
+            a_unmatched_stage1.append(a)
+    b_unmatched_stage1 = []
+    for b in eb_remaining:
+        matched = any(b is pair[1] for pair in matched_pairs)
+        if not matched:
+            b_unmatched_stage1.append(b)
+
+    # ---- Stage 2: Type‑level matching for modifications ----
+    # Group remaining by type only (ignoring shape_key)
+    groups_a2 = defaultdict(list)
+    for a in a_unmatched_stage1:
+        groups_a2[a['type']].append(a)
+    groups_b2 = defaultdict(list)
+    for b in b_unmatched_stage1:
+        groups_b2[b['type']].append(b)
+
+    modified = []
+    # For each type, run Hungarian with shape_cost
+    for typ, a_list in groups_a2.items():
+        b_list = groups_b2.get(typ, [])
+        if not a_list or not b_list:
+            # All will become missing/added later
+            continue
+        n = len(a_list)
+        m = len(b_list)
+        cost = np.zeros((n, m))
+        for i, a in enumerate(a_list):
+            for j, b in enumerate(b_list):
+                shape_cost = 0.0 if a['shape_key'] == b['shape_key'] else 1.0
+                pos_dist = math.hypot(a['cx'] - b['cx'], a['cy'] - b['cy'])
+                pos_cost = min(pos_dist / prox, 1.0) if prox > 0 else 0.0
+                cost[i, j] = shape_cost + pos_cost
+        row_ind, col_ind = linear_sum_assignment(cost)
+        used_a = set()
+        used_b = set()
+        for r, c in zip(row_ind, col_ind):
+            if cost[r, c] < MATCH_COST_THRESH:
+                # These are likely modifications
+                a = a_list[r]
+                b = b_list[c]
+                # Classify modification
+                if a['type'] == 'CIRCLE':
+                    dr = b['r'] - a['r']
+                    label = f"Radius {rnd(a['r'])} → {rnd(b['r'])} (Δ{dr:+.2f})"
+                elif a['type'] == 'TEXT':
+                    sim = text_similarity(a.get('norm_txt',''), b.get('norm_txt',''))
+                    if sim < TEXT_SIM_THRESH:
+                        label = f"Text '{a['txt']}' → '{b['txt']}'"
+                    else:
+                        label = f"Text formatting changed (ignored)"
+                        # Optionally treat as identical
+                elif a['type'] == 'DIMENSION':
+                    if not approx_eq(a.get('meas_rounded'), b.get('meas_rounded'), tol=DIM_TOL):
+                        label = f"Dim {a['meas_rounded']} → {b['meas_rounded']}"
+                    else:
+                        continue
+                elif a['type'] == 'INSERT':
+                    if a['name'] != b['name']:
+                        label = f"Block changed: {a['name']} → {b['name']}"
+                    elif a.get('attributes') != b.get('attributes'):
+                        label = f"Block attributes changed: {a.get('attributes')} → {b.get('attributes')}"
+                    else:
+                        continue
+                else:
+                    label = f"{a['type']} modified"
+                modified.append({
+                    'from': a,
+                    'to': b,
+                    'label': label,
+                    'bbox': b.get('bbox')
+                })
+                used_a.add(r)
+                used_b.add(c)
+        # Remaining after type matching become missing/added
+        # We'll collect them in the final unmatched lists
+    # Build final missing and added from unmatched after both stages
+    # (Simplification: treat all unmatched from stage1 that were not matched in stage2 as missing/added)
+    # For simplicity, we'll take all remaining from stage1 after removing stage2 matches
+    # Instead of complex bookkeeping, we'll just recalc:
+    # Collect all matched from stage1 (moved) and stage2 (modified)
+    all_matched_input = [pair[0] for pair in matched_pairs] + [m['from'] for m in modified]
+    all_matched_output = [pair[1] for pair in matched_pairs] + [m['to'] for m in modified]
+    missing = [e for e in ea_remaining if e not in all_matched_input]
+    added = [e for e in eb_remaining if e not in all_matched_output]
 
     moved = []
-    modified = []
-    for a,b in matched_pairs:
-        if a['shape_key'] == b['shape_key']:
-            if not (approx_eq(a['cx'],b['cx']) and approx_eq(a['cy'],b['cy'])):
-                delta_x = b['cx'] - a['cx']; delta_y = b['cy'] - a['cy']
-                moved.append({'from':a,'to':b,'label':f"Moved by ({delta_x:+.1f},{delta_y:+.1f})",'bbox':b.get('bbox')})
-        else:
-            if a['type'] == 'CIRCLE':
-                dr = b['r'] - a['r']
-                modified.append({'from':a,'to':b,'label':f"Radius {rnd(a['r'])} → {rnd(b['r'])} (Δ{dr:+.2f})",'bbox':b.get('bbox')})
-            elif a['type'] == 'TEXT' and a['txt'] != b['txt']:
-                modified.append({'from':a,'to':b,'label':f"Text '{a['txt']}' → '{b['txt']}'",'bbox':b.get('bbox')})
-            elif a['type'] == 'DIMENSION' and not approx_eq(a['meas'], b['meas'], tol=TOL_LEN):
-                modified.append({'from':a,'to':b,'label':f"Dim {rnd(a['meas'])} → {rnd(b['meas'])}",'bbox':b.get('bbox')})
-            else:
-                modified.append({'from':a,'to':b,'label':f"{a['type']} modified",'bbox':b.get('bbox')})
+    for a, b in matched_pairs:
+        if not (approx_eq(a['cx'], b['cx']) and approx_eq(a['cy'], b['cy'])):
+            delta_x = b['cx'] - a['cx']
+            delta_y = b['cy'] - a['cy']
+            moved.append({
+                'from': a,
+                'to': b,
+                'label': f"Moved by ({delta_x:+.1f},{delta_y:+.1f})",
+                'bbox': b.get('bbox')
+            })
+        # If position unchanged, no difference
 
-    missing = a_unmatched
-    added = b_unmatched
-
-    # Clash detection
+    # Clash detection (unchanged, uses eb_orig and added)
     clashes = []
-    real_in_output = [e for e in eb_orig if e['type'] in REAL_GEO]
-    for a in added:
-        if a['type'] not in REAL_GEO or not a.get('bbox'):
-            continue
-        x1,y1,x2,y2 = a['bbox']
-        w,h = x2-x1, y2-y1
-        if w<0.5 or h<0.5 or (min(w,h)>0 and max(w,h)/min(w,h)>12):
-            continue
-        for be in real_in_output:
-            if be.get('shape_key') == a.get('shape_key'):
+    try:
+        real_in_output = [e for e in eb_orig if e['type'] in REAL_GEO]
+        for a in added:
+            if a['type'] not in REAL_GEO or not a.get('bbox'):
                 continue
-            if not be.get('bbox'):
+            x1, y1, x2, y2 = a['bbox']
+            w, h = x2 - x1, y2 - y1
+            if w < 0.5 or h < 0.5 or (min(w, h) > 0 and max(w, h) / min(w, h) > 12):
                 continue
-            bx1,by1,bx2,by2 = be['bbox']
-            if (x1 - 5 < bx2 and x2 + 5 > bx1 and y1 - 5 < by2 and y2 + 5 > by1):
-                clashes.append({'a':a, 'b':be, 'bbox':a['bbox']})
-                break
+            for be in real_in_output:
+                if be.get('shape_key') == a.get('shape_key'):
+                    continue
+                if not be.get('bbox'):
+                    continue
+                bx1, by1, bx2, by2 = be['bbox']
+                if (x1 - CLASH_MARGIN < bx2 and x2 + CLASH_MARGIN > bx1 and
+                    y1 - CLASH_MARGIN < by2 and y2 + CLASH_MARGIN > by1):
+                    clashes.append({'a': a, 'b': be, 'bbox': a['bbox']})
+                    break
+    except Exception as e:
+        warnings.append(f"Clash detection error: {str(e)}")
 
-    return {'moved':moved, 'modified':modified, 'missing':missing, 'added':added, 'clashes':clashes,
-            'offset':(dx,dy), 'prox':prox}
+    return {
+        'moved': moved,
+        'modified': modified,
+        'missing': missing,
+        'added': added,
+        'clashes': clashes,
+        'offset': (dx, dy),
+        'prox': prox
+    }, warnings
 
+# ----------------------------------------------------------------------
+# Image generation (unchanged)
+# ----------------------------------------------------------------------
 def generate_qa_image(doc_b, diff, name_input, name_output, opts):
-    """Return PNG bytes of the output DXF with overlays respecting fine-grained options."""
     fig, ax = plt.subplots(figsize=(16, 16))
     ctx = RenderContext(doc_b)
     backend = MatplotlibBackend(ax)
@@ -311,7 +564,6 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
                 if label:
                     cx = rx + rw / 2
                     ly = ry + rh + 3
-                    # avoid label overlap
                     for px, py in placed_labels:
                         if abs(px - cx) < rw * 0.7 and abs(py - ly) < 10:
                             ly += 12
@@ -320,7 +572,6 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
                             bbox=dict(boxstyle='round,pad=0.2', fc='#111111', ec=color, lw=0.5, alpha=0.9))
                     placed_labels.append((cx, ly))
 
-    # Use new fine-grained options; fallback to old 'changes' for backward compatibility
     show_moved = opts.get('moved', opts.get('changes', True))
     show_modified = opts.get('modified', opts.get('changes', True))
     show_missing = opts.get('missing', opts.get('changes', True))
@@ -340,7 +591,6 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
     if show_clashes:
         draw_category('clashes', diff['clashes'], colors['clashes'], False, outlines_only)
 
-    # Legend (only show categories that are enabled)
     handles = []
     if show_moved and diff['moved']:
         handles.append(mpatches.Patch(fc=colors['moved'], ec=colors['moved'], label=f"Moved ({len(diff['moved'])})"))
@@ -370,16 +620,25 @@ def generate_qa_image(doc_b, diff, name_input, name_output, opts):
     buf.seek(0)
     return buf.getvalue()
 
+# ----------------------------------------------------------------------
+# Main processing function (partial reports, warnings)
+# ----------------------------------------------------------------------
 def process_cad_files(file1_bytes, file2_bytes, opts):
+    warnings = []
+    img_bytes = None
+    report = {}
+
     try:
         stream1 = io.BytesIO(file1_bytes)
         stream2 = io.BytesIO(file2_bytes)
         doc_a, _ = recover.read(stream1)
         doc_b, _ = recover.read(stream2)
-        ea = extract_entities(doc_a)
-        eb = extract_entities(doc_b)
+        ea, warnings_a = extract_entities(doc_a, warnings)
+        eb, warnings_b = extract_entities(doc_b, warnings)
+        warnings.extend(warnings_a)
+        warnings.extend(warnings_b)
 
-        # Check for identical
+        # Check identical
         if len(ea) == len(eb) and all(
             a['shape_key'] == b['shape_key'] and
             approx_eq(a['cx'], b['cx']) and approx_eq(a['cy'], b['cy'])
@@ -389,34 +648,27 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
             ctx = RenderContext(doc_b)
             backend = MatplotlibBackend(ax)
             Frontend(ctx, backend).draw_layout(doc_b.modelspace(), finalize=True)
-            
-            # Auto-scale to show content
-            ax.autoscale_view()
-            
-            ax.set_title("✓", fontsize=40, fontweight='bold',
-                         color='green', pad=20, loc='center')
+            ax.set_title("✓", fontsize=40, fontweight='bold', color='green', pad=20, loc='center')
             ax.set_axis_off()
             buf = io.BytesIO()
             plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#111111')
             plt.close(fig)
+            img_bytes = buf.getvalue()
             report = {
                 "identical": True,
                 "moved": 0, "modified": 0, "missing": 0, "added": 0, "clashes": 0,
-                "details": {
-                    "moved": [], "modified": [], "missing": [], "added": [], "clashes": []
-                }
+                "details": {"moved": [], "modified": [], "missing": [], "added": [], "clashes": []},
+                "warnings": warnings
             }
-            buf.seek(0)
-            return buf.getvalue(), report
+            return img_bytes, report
 
-        diff = compare_dxf(ea, eb)
+        diff, match_warnings = compare_dxf(ea, eb, warnings)
+        warnings.extend(match_warnings)
         img_bytes = generate_qa_image(doc_b, diff, "input.dxf", "output.dxf", opts)
 
-        # Build detailed lists with extra fields
         moved_details = []
-        for item in diff['moved']:
-            a = item['from']
-            b = item['to']
+        for item in diff.get('moved', []):
+            a = item['from']; b = item['to']
             moved_details.append({
                 "type": a['type'],
                 "label": item['label'],
@@ -424,11 +676,9 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
                 "change_description": f"Moved from ({a['cx']:.1f},{a['cy']:.1f}) to ({b['cx']:.1f},{b['cy']:.1f})",
                 "position": f"({b['cx']:.1f}, {b['cy']:.1f})"
             })
-
         modified_details = []
-        for item in diff['modified']:
-            a = item['from']
-            b = item['to']
+        for item in diff.get('modified', []):
+            a = item['from']; b = item['to']
             modified_details.append({
                 "type": a['type'],
                 "label": item['label'],
@@ -436,31 +686,33 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
                 "change_description": item['label'],
                 "position": f"({b.get('cx', 0):.1f}, {b.get('cy', 0):.1f})"
             })
-
         missing_details = []
-        for item in diff['missing']:
+        for item in diff.get('missing', []):
+            attrs_str = ""
+            if item.get('attributes'):
+                attrs_str = " " + str(item['attributes'])
             missing_details.append({
                 "type": item['type'],
-                "label": item.get('label', 'Unknown'),
+                "label": item.get('label', 'Unknown') + attrs_str,
                 "layer": item.get('layer', '0'),
                 "change_description": "Missing in output",
                 "position": f"({item.get('cx', 0):.1f}, {item.get('cy', 0):.1f})"
             })
-
         added_details = []
-        for item in diff['added']:
+        for item in diff.get('added', []):
+            attrs_str = ""
+            if item.get('attributes'):
+                attrs_str = " " + str(item['attributes'])
             added_details.append({
                 "type": item['type'],
-                "label": item.get('label', 'Unknown'),
+                "label": item.get('label', 'Unknown') + attrs_str,
                 "layer": item.get('layer', '0'),
                 "change_description": "Added (not in input)",
                 "position": f"({item.get('cx', 0):.1f}, {item.get('cy', 0):.1f})"
             })
-
         clash_details = []
-        for item in diff['clashes']:
-            a = item['a']
-            b = item['b']
+        for item in diff.get('clashes', []):
+            a = item['a']; b = item['b']
             clash_details.append({
                 "type": a['type'],
                 "label": f"{a.get('label', '?')} ↔ {b.get('label', '?')}",
@@ -468,7 +720,6 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
                 "change_description": f"Clash between {a['type']} and {b['type']}",
                 "position": f"({a.get('cx', 0):.1f}, {a.get('cy', 0):.1f})"
             })
-
         report = {
             "identical": False,
             "moved": len(moved_details),
@@ -482,74 +733,28 @@ def process_cad_files(file1_bytes, file2_bytes, opts):
                 "missing": missing_details,
                 "added": added_details,
                 "clashes": clash_details
-            }
+            },
+            "warnings": warnings
         }
         return img_bytes, report
+
     except Exception as e:
-        logger.error(f"CAD processing error: {str(e)}", exc_info=True)
+        logger.error(f"Critical CAD processing error: {str(e)}", exc_info=True)
         fig, ax = plt.subplots(figsize=(8,6))
-        ax.text(0.5, 0.5, f"CAD Error: {str(e)}", ha='center', va='center', transform=ax.transAxes, color='red')
+        ax.text(0.5, 0.5, f"CAD Analysis Failed:\n{str(e)}", ha='center', va='center',
+                transform=ax.transAxes, color='red')
+        ax.set_axis_off()
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         plt.close(fig)
-        buf.seek(0)
-        report = {"error": str(e)}
-        return buf.getvalue(), report
+        img_bytes = buf.getvalue()
+        report = {"error": str(e), "warnings": warnings}
+        return img_bytes, report
 
-
-def get_dxf_bounds(doc):
-    """Calculate bounding box of all entities in the DXF document."""
-    try:
-        xs = []
-        ys = []
-        
-        for entity in doc.modelspace():
-            try:
-                # Get bounding box for different entity types
-                if hasattr(entity, 'bbox'):
-                    bbox_data = entity.bbox()
-                    if bbox_data and len(bbox_data) >= 2:
-                        p1, p2 = bbox_data[0], bbox_data[1]
-                        xs.extend([p1[0], p2[0]])
-                        ys.extend([p1[1], p2[1]])
-            except:
-                pass
-        
-        if xs and ys:
-            min_x, max_x = min(xs), max(xs)
-            min_y, max_y = min(ys), max(ys)
-            
-            # Add 10% padding
-            width = max_x - min_x
-            height = max_y - min_y
-            pad_x = width * 0.1 if width > 0 else 10
-            pad_y = height * 0.1 if height > 0 else 10
-            
-            return (min_x - pad_x, min_y - pad_y, max_x + pad_x, max_y + pad_y)
-        
-        return None
-    except Exception as e:
-        logger.warning(f"Could not calculate DXF bounds: {e}")
-        return None
-# ============================================================================
-# DXF PREVIEW FUNCTION
-# ============================================================================
-def render_dxf_clean(file_bytes):
-    """
-    Generate a clean preview of a DXF file by reusing the identical‑file branch
-    but with the title text suppressed.
-    """
-    import io
-    # Call process_cad_files with the same file twice and an option to skip the title
-    # We'll need to modify process_cad_files to accept a skip_title argument.
-    # Since we can't change the existing function signature easily, we'll copy the identical branch code.
-    # But to avoid duplication, let's create a separate internal function.
-    return _render_dxf_from_bytes(file_bytes, preview_mode=True)
-
+# ----------------------------------------------------------------------
+# DXF preview (reuse identical-file branch with no overlays)
+# ----------------------------------------------------------------------
 def render_dxf_preview(file_bytes):
-    """Generate a clean preview of a DXF file by reusing the QA renderer with no overlays."""
-    import io
-    # Call process_cad_files with the same file for both inputs and options that turn off all overlays
     opts = {
         "moved": False,
         "modified": False,
@@ -559,6 +764,5 @@ def render_dxf_preview(file_bytes):
         "labels": False,
         "outlinesOnly": False
     }
-    # Since process_cad_files expects two files, we pass the same bytes for both
     img_bytes, _ = process_cad_files(file_bytes, file_bytes, opts)
     return img_bytes
